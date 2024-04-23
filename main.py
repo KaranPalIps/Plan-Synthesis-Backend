@@ -13,7 +13,6 @@ from langchain.embeddings.ollama import OllamaEmbeddings
 from langchain_groq import ChatGroq
 from langchain.indexes import VectorstoreIndexCreator
 from dotenv import load_dotenv
-from backend import response, llamaresponse, gemmaresponse
 from langchain.document_loaders import UnstructuredPDFLoader
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain

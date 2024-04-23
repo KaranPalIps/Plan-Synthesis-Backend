@@ -99,8 +99,11 @@ def create_embeddings():
                 'Llama': llama_result,
                 'Gemma': gemma_result,
             }
-            response_json = answer_questions(question_data)
-            return response_json, 200
+
+            question_data['Mistral'] = json.dumps(mistral_result)
+            question_data['Llama'] = json.dumps(llama_result)
+            question_data['Gemma'] = json.dumps(gemma_result)
+            return question_data, 200
 
         return jsonify(message='Allowed file types are ' + ', '.join(app.config['ALLOWED_EXTENSIONS']))
 
@@ -129,7 +132,6 @@ def mistralChat(vectordb):
         chain.combine_docs_chain.llm_chain.prompt.messages[0] = system_prompt
 
         prompt = """
-        Answer the below questions from the context.
         Questions:
 
         Question 1: What is the last review date?
@@ -154,18 +156,6 @@ def mistralChat(vectordb):
         print('mistralChat',e)
 
 
-def answer_questions(data):
-    responses = {}
-    
-    for name, data in data.items():   
-        answer = json.loads(data["answer"])
-        for question, response in answer.items():
-            if question not in responses:
-                responses[question] = {}
-            responses[question][name] = response
-    
-    return responses
-
 def llamaChat(vectordb):
     try:
         llm = ChatGroq(temperature=1, model="llama2-70b-4096",api_key=os.getenv('GROQ_API_KEY'))
@@ -188,7 +178,6 @@ def llamaChat(vectordb):
         chain.combine_docs_chain.llm_chain.prompt.messages[0] = system_prompt
 
         prompt = """
-        Answer the below questions from the context.
         Questions:
 
         Question 1: What is the last review date?
