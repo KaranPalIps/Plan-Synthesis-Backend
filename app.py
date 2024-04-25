@@ -1,32 +1,41 @@
 import os
 import json
 from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
-
-import pinecone
-from langchain.document_loaders.pdf import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores.pinecone import Pinecone as pc
-from pinecone import Pinecone
-from langchain_community.vectorstores import Chroma
-from langchain_groq import ChatGroq
-from langchain.chains import ConversationalRetrievalChain
-from dotenv import load_dotenv
-from langchain.prompts import ChatPromptTemplate
 from flask_cors import CORS
-from langchain.embeddings.ollama import OllamaEmbeddings
-import chromadb
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+import logging
+import sys
+from pprint import pprint
+from llama_index.core import(
+    VectorStoreIndex,
+    SimpleDirectoryReader,
+    load_index_from_storage,
+    StorageContext,
+    ServiceContext,
+    Document
+)
+from llama_index.llms.groq import Groq
+from llama_index.core.node_parser import SentenceWindowNodeParser, HierarchicalNodeParser, get_leaf_nodes
+from llama_index.core.text_splitter import SentenceSplitter
+from llama_index.core.schema import MetadataMode
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.core.postprocessor import MetadataReplacementPostProcessor
+from llama_index.core import Settings
+from constant import question
 
-
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 load_dotenv
 
+# Initialising the flask and app configs.
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['ALLOWED_EXTENSIONS'] = ['pdf']
 CORS(app)
 
-
+# The function that to only allow pdfs to be uploaded
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
@@ -35,11 +44,11 @@ def allowed_file(filename):
 def healthChecker():
     return jsonify(message='Healthy')
 
-def process_question(vectordb):
+def process_question(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        mistral_result = mistralChat(vectordb)
-        llama_result = llamaChat(vectordb)
-        gemma_result = gemmaChat(vectordb)
+        mistral_result = mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
+        llama_result = llamaChat(nodes, base_nodes. sentence_node_parser, base_node_parser)
+        gemma_result = gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
 
         question_data = {
             'Mistral': mistral_result,
@@ -65,34 +74,30 @@ def create_embeddings():
             filename = secure_filename(file.filename)
             file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            
+            # Initializing the document loader with the chunks of the pdf
+            documents = SimpleDirectoryReader(input_files=[filepath]).load_data()
 
-            loader = PyPDFLoader(filepath)
-            documents.extend(loader.load())
+            # create the sentence window parser w/ default settings
+            
+            sentence_node_parser = SentenceWindowNodeParser.from_defaults(
+                window_size=3,
+                window_metadata_key="window",
+                original_text_metadata_key="original_text"
+            )
+        
+            base_node_parser = SentenceSplitter()
 
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=100,
-                separators=[
-                    "\n\n",
-                    "\n",
-                ]
-            )
-            texts = text_splitter.split_documents(documents)
-            print('Vector Stores')
-            client = chromadb.Client()
-            if client.list_collections():
-                consent_collection = client.create_collection("consent_collection")
-            else:
-                print("Collection already exists")
-            vectordb = Chroma.from_documents(
-                documents=texts,
-                embedding=OllamaEmbeddings(model='nomic-embed-text'),
-                persist_directory="D:\\A.I projects\\Plan-Synthesis demo\\db"
-            )
-            vectordb.persist()
-            mistral_result = mistralChat(vectordb)
-            llama_result = llamaChat(vectordb)
-            gemma_result = gemmaChat(vectordb)
+            Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+            Settings.chunk_size = 512
+            
+            nodes = sentence_node_parser.get_nodes_from_documents(documents)
+            base_nodes = base_node_parser.get_nodes_from_documents(documents)
+
+
+            mistral_result = mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
+            llama_result = llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
+            gemma_result = gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
 
             question_data = {
                 'Mistral': mistral_result,
@@ -111,139 +116,141 @@ def create_embeddings():
         return jsonify({"error": str(e)}), 500
 
 
-def mistralChat(vectordb):
+def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = ChatGroq(temperature=1, model="mixtral-8x7b-32768",api_key=os.getenv('GROQ_API_KEY'))
-        retriever = vectordb.as_retriever(search_kwargs={"k": 2})
-        chain = ConversationalRetrievalChain.from_llm(
-            llm,
-            retriever=retriever,
+        llm = Groq(temperature=1, model="mixtral-8x7b-32768",api_key=os.getenv('GROQ_API_KEY'))
+
+        ctx_sentence = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
+        ctx_base = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+
+        sentence_index = VectorStoreIndex(nodes, service_context=ctx_sentence)
+        base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+
+        sentence_index.storage_context.persist(persist_dir="./sentence_index")
+        base_index.storage_context.persist(persist_dir="./base_index")
+
+        ServiceContext.from_defaults(chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Retrieve from Storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+
+        retrieved_sentence_index = load_index_from_storage(SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
+        retrieved_base_index = load_index_from_storage(SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Create query engine
+        sentence_query_engine = retrieved_sentence_index.as_query_engine(
+            llm=llm,
+            similarity_top_k=5,
+            verbose=True,
+            node_postprocessors = [
+                MetadataReplacementPostProcessor(target_metadata_key="window")
+            ],
         )
 
-        PROMPT_TEMPLATE = """You are a good assistant that answer questions. Your knowledge is strictly limited to the following piece of context. Use it to answer the question at the end.
-        If the answer can't be found in the context, just say you don't know. *DO NOT* try to make up an answer.
-        If the question is not related to the context, politely respond that you are tuned to only answer question that are related to the context.
-        Give a response in the same language as the question.
+        base_query_engine = retrieved_base_index.as_query_engine(
+            similarity_top_k=5,
+            verbose=True,
+            llm=llm
+        )
 
-        Context: {context}
-        """
-        system_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-
-        chain.combine_docs_chain.llm_chain.prompt.messages[0] = system_prompt
-
-        prompt = """
-        Questions:
-
-        Question 1: What is the last review date?
-        Question 2: What is the effective date?
-        Question 3: What are the HCPCS Code?
-        Question 4: What is policy number?
-        Question 5: What is policy name?
-        Question 6: What is the last review date?
-        Question 7: What is the email address?
-        Question 8: What is the fax number?
-        Question 9: What is the address?
-        Question 10: What is the phone number?
-        Question 11: What is the effective date?
-        Question 12: What is the length of approval?
-
-        Give the response of the above question in json format
-        """
-
-        ai_response = chain({"question": prompt, "chat_history": ''})
-        return ai_response
+        #Inference
+        base_response = sentence_query_engine(
+            question
+        )
+        return base_response
     except Exception as e:
         print('mistralChat',e)
 
 
-def llamaChat(vectordb):
+def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = ChatGroq(temperature=1, model="llama2-70b-4096",api_key=os.getenv('GROQ_API_KEY'))
-        DB_PATH = "vectorstores/db/"
-        retriever = vectordb.as_retriever(search_kwargs={"k": 2})
-        chain = ConversationalRetrievalChain.from_llm(
-            llm,
-            retriever=retriever,
+        llm = Groq(temperature=1, model="llama2-70b-4096",api_key=os.getenv('GROQ_API_KEY'))
+        ctx_sentence = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
+        ctx_base = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+
+        sentence_index = VectorStoreIndex(nodes, service_context=ctx_sentence)
+        base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+
+        sentence_index.storage_context.persist(persist_dir="./sentence_index")
+        base_index.storage_context.persist(persist_dir="./base_index")
+
+        ServiceContext.from_defaults(chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Retrieve from Storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+
+        retrieved_sentence_index = load_index_from_storage(SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
+        retrieved_base_index = load_index_from_storage(SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Create query engine
+        sentence_query_engine = retrieved_sentence_index.as_query_engine(
+            llm=llm,
+            similarity_top_k=5,
+            verbose=True,
+            node_postprocessors = [
+                MetadataReplacementPostProcessor(target_metadata_key="window")
+            ],
         )
 
-        PROMPT_TEMPLATE = """You are a good assistant that answer questions. Your knowledge is strictly limited to the following piece of context. Use it to answer the question at the end.
-        If the answer can't be found in the context, just say you don't know. *DO NOT* try to make up an answer.
-        If the question is not related to the context, politely respond that you are tuned to only answer question that are related to the context.
-        Give a response in the same language as the question.
+        base_query_engine = retrieved_base_index.as_query_engine(
+            similarity_top_k=5,
+            verbose=True,
+            llm=llm
+        )
 
-        Context: {context}
-        """
-        system_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-
-        chain.combine_docs_chain.llm_chain.prompt.messages[0] = system_prompt
-
-        prompt = """
-        Questions:
-
-        Question 1: What is the last review date?
-        Question 2: What is the effective date?
-        Question 3: What are the HCPCS Code?
-        Question 4: What is policy number?
-        Question 5: What is policy name?
-        Question 6: What is the last review date?
-        Question 7: What is the email address?
-        Question 8: What is the fax number?
-        Question 9: What is the address?
-        Question 10: What is the phone number?
-        Question 11: What is the effective date?
-        Question 12: What is the length of approval?
-
-        Give the response of the above question in json format
-        """
-
-        ai_response = chain({"question": prompt, "chat_history": ''})
-        return ai_response
+        #Inference
+        base_response = sentence_query_engine(
+            question
+        )
+        return base_response
     except Exception as e:
         print('llamaChat',e)
 
 
-def gemmaChat(vectordb):
+def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = ChatGroq(temperature=1, model="gemma-7b-it",api_key=os.getenv('GROQ_API_KEY'))
-        retriever = vectordb.as_retriever(search_kwargs={"k": 2})
-        chain = ConversationalRetrievalChain.from_llm(
-            llm,
-            retriever=retriever,
+        llm = Groq(temperature=1, model="gemma-7b-it",api_key=os.getenv('GROQ_API_KEY'))
+        ctx_sentence = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
+        ctx_base = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+
+        sentence_index = VectorStoreIndex(nodes, service_context=ctx_sentence)
+        base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+
+        sentence_index.storage_context.persist(persist_dir="./sentence_index")
+        base_index.storage_context.persist(persist_dir="./base_index")
+
+        ServiceContext.from_defaults(chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Retrieve from Storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+
+        retrieved_sentence_index = load_index_from_storage(SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
+        retrieved_base_index = load_index_from_storage(SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
+
+        # Create query engine
+        sentence_query_engine = retrieved_sentence_index.as_query_engine(
+            llm=llm,
+            similarity_top_k=5,
+            verbose=True,
+            node_postprocessors = [
+                MetadataReplacementPostProcessor(target_metadata_key="window")
+            ],
         )
 
-        PROMPT_TEMPLATE = """You are a good assistant that answer questions. Your knowledge is strictly limited to the following piece of context. Use it to answer the question at the end.
-        If the answer can't be found in the context, just say you don't know. *DO NOT* try to make up an answer.
-        If the question is not related to the context, politely respond that you are tuned to only answer question that are related to the context.
-        Give a response in the same language as the question.
+        base_query_engine = retrieved_base_index.as_query_engine(
+            similarity_top_k=5,
+            verbose=True,
+            llm=llm
+        )
 
-        Context: {context}
-        """
-        system_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-
-        chain.combine_docs_chain.llm_chain.prompt.messages[0] = system_prompt
-
-        prompt = """
-        Answer the below questions from the context.
-        Questions:
-
-        Question 1: What is the last review date?
-        Question 2: What is the effective date?
-        Question 3: What are the HCPCS Code?
-        Question 4: What is policy number?
-        Question 5: What is policy name?
-        Question 6: What is the last review date?
-        Question 7: What is the email address?
-        Question 8: What is the fax number?
-        Question 9: What is the address?
-        Question 10: What is the phone number?
-        Question 11: What is the effective date?
-        Question 12: What is the length of approval?
-
-        Give the response of the above question in json format
-        """
-
-        ai_response = chain({"question": prompt, "chat_history": ''})
-        return ai_response
+        #Inference
+        base_response = sentence_query_engine(
+            question
+        )
+        return base_response
     except Exception as e:
         print('gemmaChat',e)
 
