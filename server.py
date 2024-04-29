@@ -134,7 +134,7 @@ async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
         # Create query engine
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
             llm=Groq(model="mixtral-8x7b-32768",
-                     api_key="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"),
+                     api_key=os.getenv('GROQ_API_KEY')),
             similarity_top_k=5,
             verbose=True,
             node_postprocessors=[
@@ -146,7 +146,7 @@ async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
             similarity_top_k=5,
             verbose=True,
             llm=Groq(model="mixtral-8x7b-32768",
-                     api_key="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")
+                     api_key=os.getenv('GROQ_API_KEY'))
         )
         print('Inference')
         # Inference
@@ -188,7 +188,7 @@ async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         # Create query engine
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
             llm=Groq(model="llama3-70b-8192",
-                     api_key="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"),
+                     api_key=os.getenv('GROQ_API_KEY')),
             similarity_top_k=5,
             verbose=True,
             node_postprocessors=[
@@ -200,7 +200,7 @@ async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
             similarity_top_k=5,
             verbose=True,
             llm=Groq(model="llama3-70b-8192",
-                     api_key="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")
+                     api_key=os.getenv('GROQ_API_KEY'))
         )
         print('Inference')
         # Inference
@@ -241,7 +241,7 @@ async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
             SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
             llm=Groq(model="gemma-7b-it",
-                     api_key="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"),
+                     api_key=os.getenv('GROQ_API_KEY')),
             similarity_top_k=5,
             verbose=True,
             node_postprocessors=[
@@ -252,7 +252,7 @@ async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
             similarity_top_k=5,
             verbose=True,
             llm=Groq(model="gemma-7b-it",
-                     api_key="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")
+                     api_key=os.getenv('GROQ_API_KEY'))
         )
         print('Inference')
         # Inference
