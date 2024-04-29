@@ -24,8 +24,8 @@ from llama_index.core.postprocessor import MetadataReplacementPostProcessor
 from llama_index.core import Settings
 from constant import question
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+# logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+# logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
 load_dotenv
 
@@ -88,26 +88,33 @@ def create_embeddings():
         
             base_node_parser = SentenceSplitter()
 
-            Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
-            Settings.chunk_size = 512
+            try: 
+                Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+                Settings.chunk_size = 512
+                # Settings._llm=Groq(api_key=os.getenv('GROQ_API_KEY'))
+            except Exception as e:
+                print(e)
             
             nodes = sentence_node_parser.get_nodes_from_documents(documents)
             base_nodes = base_node_parser.get_nodes_from_documents(documents)
 
 
             mistral_result = mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
-            llama_result = llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
-            gemma_result = gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
+            # llama_result = llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
+            # gemma_result = gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
 
+            print(type(mistral_result))
+            # print(llama_result)
+            # print(gemma_result)
             question_data = {
-                'Mistral': mistral_result,
-                'Llama': llama_result,
-                'Gemma': gemma_result,
+                'Mistral': mistral_result
+                # 'Llama': llama_result,
+                # 'Gemma': gemma_result,
             }
 
             question_data['Mistral'] = json.dumps(mistral_result)
-            question_data['Llama'] = json.dumps(llama_result)
-            question_data['Gemma'] = json.dumps(gemma_result)
+            # question_data['Llama'] = json.dumps(llama_result)
+            # question_data['Gemma'] = json.dumps(gemma_result)
             return question_data, 200
 
         return jsonify(message='Allowed file types are ' + ', '.join(app.config['ALLOWED_EXTENSIONS']))
@@ -119,31 +126,27 @@ def create_embeddings():
 def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
         llm = Groq(temperature=1, model="mixtral-8x7b-32768",api_key=os.getenv('GROQ_API_KEY'))
-
         ctx_sentence = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
         ctx_base = ServiceContext.from_defaults(llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
-
-        sentence_index = VectorStoreIndex(nodes, service_context=ctx_sentence)
-        base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
-
+        try:
+            sentence_index = VectorStoreIndex(nodes, service_context=ctx_sentence)
+            base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+        except Exception as e:
+            print(e)
         sentence_index.storage_context.persist(persist_dir="./sentence_index")
         base_index.storage_context.persist(persist_dir="./base_index")
-
         ServiceContext.from_defaults(chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
-
         # Retrieve from Storage
         SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
         SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
-
         retrieved_sentence_index = load_index_from_storage(SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
         retrieved_base_index = load_index_from_storage(SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
-
         # Create query engine
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
             llm=llm,
             similarity_top_k=5,
             verbose=True,
-            node_postprocessors = [
+            node_postprocessors=[
                 MetadataReplacementPostProcessor(target_metadata_key="window")
             ],
         )
@@ -151,13 +154,15 @@ def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=llm
+            llm=Groq(model="mixtral-8x7b-32768", api_key="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")
         )
-
+        print('Inference')
         #Inference
-        base_response = sentence_query_engine(
-            question
-        )
+        try:
+            base_response = sentence_query_engine.query(question)
+        except Exception as e:
+            print(e)
+        
         return base_response
     except Exception as e:
         print('mistralChat',e)
@@ -186,7 +191,7 @@ def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
 
         # Create query engine
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
-            llm=llm,
+            llm=Groq(temperature=1, model="llama2-70b-4096",api_key=os.getenv('GROQ_API_KEY')),
             similarity_top_k=5,
             verbose=True,
             node_postprocessors = [
@@ -197,7 +202,7 @@ def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=llm
+            llm=Groq(temperature=1, model="llama2-70b-4096",api_key=os.getenv('GROQ_API_KEY'))
         )
 
         #Inference
@@ -232,7 +237,7 @@ def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
 
         # Create query engine
         sentence_query_engine = retrieved_sentence_index.as_query_engine(
-            llm=llm,
+            llm=Groq(temperature=1, model="gemma-7b-it",api_key=os.getenv('GROQ_API_KEY')),
             similarity_top_k=5,
             verbose=True,
             node_postprocessors = [
@@ -243,7 +248,7 @@ def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=llm
+            llm=Groq(temperature=1, model="gemma-7b-it",api_key=os.getenv('GROQ_API_KEY'))
         )
 
         #Inference
