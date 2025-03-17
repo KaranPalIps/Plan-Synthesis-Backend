@@ -21,6 +21,7 @@ from llama_index.core.postprocessor import MetadataReplacementPostProcessor
 from llama_index.core import Settings
 from fastapi.middleware.cors import CORSMiddleware
 from constant import question
+import json
 
 app = FastAPI()
 load_dotenv()  # Add parentheses to execute the function
@@ -106,11 +107,11 @@ async def create_embeddings(file: UploadFile):
 async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
         # Use API key from environment variables
-        groq_api_key = os.getenv('GROQ_API_KEY')
+        groq_api_key = os.getenv('MISTRAL_API_KEY')
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment variables")
             
-        llm = Groq(temperature=1, model="mixtral-8x7b-32768", api_key=groq_api_key)
+        llm = Groq(temperature=1, model="mixtral-8x7b-32768", api_key=groq_api_key, response_format={"type": "json_object"})
         
         # Use Settings instead of ServiceContext
         Settings.llm = llm
@@ -147,7 +148,39 @@ async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
         print('Running Mistral inference')
         base_response = base_query_engine.query(question)
         
-        return str(base_response)  # Convert response to string to ensure it's serializable
+        # Parse the response into proper JSON
+        try:
+            # First try to parse it directly
+            if hasattr(base_response, 'response'):
+                json_response = json.loads(base_response.response)
+            else:
+                json_response = json.loads(str(base_response))
+            return json_response
+        except json.JSONDecodeError:
+            # If the response is wrapped in ``` or other text, try to extract the JSON portion
+            response_str = str(base_response)
+            
+            # Try to find JSON between triple backticks
+            if "```" in response_str:
+                parts = response_str.split("```")
+                for i in range(len(parts)):
+                    if i > 0 and (i % 2 == 1 or (parts[i-1].strip().endswith("json") or parts[i-1].strip() == "")):
+                        try:
+                            return json.loads(parts[i].strip())
+                        except:
+                            pass
+            
+            # If that fails, look for anything that might be JSON (between curly braces)
+            try:
+                start = response_str.find('{')
+                end = response_str.rfind('}') + 1
+                if start != -1 and end != 0:
+                    return json.loads(response_str[start:end])
+            except:
+                pass
+                
+            # If all parsing attempts fail, return the string response with an error indicator
+            return {"error": "Could not parse JSON response", "raw_response": str(base_response)}
     except Exception as e:
         print(f'Error in mistralChat: {e}')
         return f"Error in mistralChat: {str(e)}"
@@ -156,11 +189,11 @@ async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser)
 async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
         # Use API key from environment variables
-        groq_api_key = os.getenv('GROQ_API_KEY')
+        groq_api_key = os.getenv('LLAMA_API_KEY')
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment variables")
             
-        llm = Groq(temperature=1, model="llama-3.3-70b-versatile", api_key=groq_api_key)
+        llm = Groq(temperature=1, model="llama-3.3-70b-versatile", api_key=groq_api_key, response_format={"type": "json_object"})
         
         # Use Settings instead of ServiceContext
         Settings.llm = llm
@@ -197,7 +230,39 @@ async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         print('Running Llama inference')
         base_response = base_query_engine.query(question)
         
-        return str(base_response)  # Convert response to string to ensure it's serializable
+        # Parse the response into proper JSON
+        try:
+            # First try to parse it directly
+            if hasattr(base_response, 'response'):
+                json_response = json.loads(base_response.response)
+            else:
+                json_response = json.loads(str(base_response))
+            return json_response
+        except json.JSONDecodeError:
+            # If the response is wrapped in ``` or other text, try to extract the JSON portion
+            response_str = str(base_response)
+            
+            # Try to find JSON between triple backticks
+            if "```" in response_str:
+                parts = response_str.split("```")
+                for i in range(len(parts)):
+                    if i > 0 and (i % 2 == 1 or (parts[i-1].strip().endswith("json") or parts[i-1].strip() == "")):
+                        try:
+                            return json.loads(parts[i].strip())
+                        except:
+                            pass
+            
+            # If that fails, look for anything that might be JSON (between curly braces)
+            try:
+                start = response_str.find('{')
+                end = response_str.rfind('}') + 1
+                if start != -1 and end != 0:
+                    return json.loads(response_str[start:end])
+            except:
+                pass
+                
+            # If all parsing attempts fail, return the string response with an error indicator
+            return {"error": "Could not parse JSON response", "raw_response": str(base_response)}
     except Exception as e:
         print(f'Error in llamaChat: {e}')
         return f"Error in llamaChat: {str(e)}"
@@ -206,11 +271,11 @@ async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
 async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
         # Use API key from environment variables
-        groq_api_key = os.getenv('GROQ_API_KEY')
+        groq_api_key = os.getenv('GEMMA_API_KEY')
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment variables")
             
-        llm = Groq(temperature=1, model="gemma2-9b-it", api_key=groq_api_key)
+        llm = Groq(temperature=1, model="gemma2-9b-it", api_key=groq_api_key, response_format={"type": "json_object"})
         
         # Use Settings instead of ServiceContext
         Settings.llm = llm
@@ -247,7 +312,39 @@ async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         print('Running Gemma inference')
         base_response = base_query_engine.query(question)
         
-        return str(base_response)  # Convert response to string to ensure it's serializable
+        # Parse the response into proper JSON
+        try:
+            # First try to parse it directly
+            if hasattr(base_response, 'response'):
+                json_response = json.loads(base_response.response)
+            else:
+                json_response = json.loads(str(base_response))
+            return json_response
+        except json.JSONDecodeError:
+            # If the response is wrapped in ``` or other text, try to extract the JSON portion
+            response_str = str(base_response)
+            
+            # Try to find JSON between triple backticks
+            if "```" in response_str:
+                parts = response_str.split("```")
+                for i in range(len(parts)):
+                    if i > 0 and (i % 2 == 1 or (parts[i-1].strip().endswith("json") or parts[i-1].strip() == "")):
+                        try:
+                            return json.loads(parts[i].strip())
+                        except:
+                            pass
+            
+            # If that fails, look for anything that might be JSON (between curly braces)
+            try:
+                start = response_str.find('{')
+                end = response_str.rfind('}') + 1
+                if start != -1 and end != 0:
+                    return json.loads(response_str[start:end])
+            except:
+                pass
+                
+            # If all parsing attempts fail, return the string response with an error indicator
+            return {"error": "Could not parse JSON response", "raw_response": str(base_response)}
     except Exception as e:
         print(f'Error in gemmaChat: {e}')
         return f"Error in gemmaChat: {str(e)}"
