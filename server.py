@@ -9,7 +9,6 @@ from llama_index.core import (
     SimpleDirectoryReader,
     load_index_from_storage,
     StorageContext,
-    ServiceContext,
     Document
 )
 from werkzeug.utils import secure_filename
@@ -24,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from constant import question
 
 app = FastAPI()
-load_dotenv
+load_dotenv()  # Add parentheses to execute the function
 config = {}
 config['UPLOAD_FOLDER'] = 'uploads'
 config['ALLOWED_EXTENSIONS'] = ['pdf']
@@ -55,6 +54,10 @@ async def create_embeddings(file: UploadFile):
             filename = secure_filename(file.filename)
             print(file)
             filepath = os.path.join(config['UPLOAD_FOLDER'], filename)
+            
+            # Ensure upload directory exists
+            os.makedirs(config['UPLOAD_FOLDER'], exist_ok=True)
+            
             with open(filepath, "wb") as f:
                 content = await file.read()  # Read the file content
                 f.write(content)
@@ -72,12 +75,9 @@ async def create_embeddings(file: UploadFile):
 
             base_node_parser = SentenceSplitter()
 
-            try:
-                Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
-                Settings.chunk_size = 512
-                # Settings._llm=Groq(api_key=os.getenv('GROQ_API_KEY'))
-            except Exception as e:
-                print(e)
+            # Set global settings
+            Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+            Settings.chunk_size = 512
 
             nodes = sentence_node_parser.get_nodes_from_documents(documents)
             base_nodes = base_node_parser.get_nodes_from_documents(documents)
@@ -92,173 +92,162 @@ async def create_embeddings(file: UploadFile):
                 'Llama': llama_result,
                 'Gemma': gemma_result,
             }
-
-            question_data['Mistral'] = mistral_result
-            question_data['Llama'] = llama_result
-            question_data['Gemma'] = gemma_result
+            
+            print(question_data)
             return question_data
 
         return {"message": 'Allowed file types are ' + ', '.join(config['ALLOWED_EXTENSIONS'])}
 
     except Exception as e:
+        print(f"Error in create_embeddings: {str(e)}")
         return {"error": str(e)}, 500
 
 
 async def mistralChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = Groq(temperature=1, model="mixtral-8x7b-32768",
-                   api_key=os.getenv('GROQ_API_KEY'))
-        ctx_sentence = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
-        ctx_base = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+        # Use API key from environment variables
+        groq_api_key = os.getenv('GROQ_API_KEY')
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY not found in environment variables")
+            
+        llm = Groq(temperature=1, model="mixtral-8x7b-32768", api_key=groq_api_key)
+        
+        # Use Settings instead of ServiceContext
+        Settings.llm = llm
+        Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+        
+        # Create the indices
         try:
-            sentence_index = VectorStoreIndex(
-                nodes, service_context=ctx_sentence)
-            base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+            sentence_index = VectorStoreIndex(nodes)
+            base_index = VectorStoreIndex(base_nodes)
         except Exception as e:
-            print(e)
+            print(f"Error creating indices: {e}")
+            raise
+            
+        # Save indices
         sentence_index.storage_context.persist(persist_dir="./sentence_index")
         base_index.storage_context.persist(persist_dir="./base_index")
-        ServiceContext.from_defaults(
-            chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
-        # Retrieve from Storage
-        SC_retrieved_sentence = StorageContext.from_defaults(
-            persist_dir="./sentence_index")
-        SC_retrieved_base = StorageContext.from_defaults(
-            persist_dir="./base_index")
+        
+        # Retrieve from storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+        
         retrieved_sentence_index = load_index_from_storage(
             SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
         retrieved_base_index = load_index_from_storage(
             SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
+        
         # Create query engine
-        sentence_query_engine = retrieved_sentence_index.as_query_engine(
-            llm=Groq(model="mixtral-8x7b-32768",
-                     api_key=os.getenv('GROQ_API_KEY')),
-            similarity_top_k=5,
-            verbose=True,
-            node_postprocessors=[
-                MetadataReplacementPostProcessor(target_metadata_key="window")
-            ],
-        )
-
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=Groq(model="mixtral-8x7b-32768",
-                     api_key=os.getenv('GROQ_API_KEY'))
+            llm=llm
         )
-        print('Inference')
-        # Inference
-
+        
+        print('Running Mistral inference')
         base_response = base_query_engine.query(question)
-
-        return base_response
+        
+        return str(base_response)  # Convert response to string to ensure it's serializable
     except Exception as e:
-        print('mistralChat', e)
+        print(f'Error in mistralChat: {e}')
+        return f"Error in mistralChat: {str(e)}"
 
 
 async def llamaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = Groq(temperature=1, model="llama3-70b-8192",
-                   api_key=os.getenv('GROQ_API_KEY'))
-        ctx_sentence = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
-        ctx_base = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+        # Use API key from environment variables
+        groq_api_key = os.getenv('GROQ_API_KEY')
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY not found in environment variables")
+            
+        llm = Groq(temperature=1, model="llama-3.3-70b-versatile", api_key=groq_api_key)
+        
+        # Use Settings instead of ServiceContext
+        Settings.llm = llm
+        Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+        
+        # Create the indices
         try:
-            sentence_index = VectorStoreIndex(
-                nodes, service_context=ctx_sentence)
-            base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+            sentence_index = VectorStoreIndex(nodes)
+            base_index = VectorStoreIndex(base_nodes)
         except Exception as e:
-            print(e)
+            print(f"Error creating indices: {e}")
+            raise
+            
+        # Save indices
         sentence_index.storage_context.persist(persist_dir="./sentence_index")
         base_index.storage_context.persist(persist_dir="./base_index")
-        ServiceContext.from_defaults(
-            chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
-        # Retrieve from Storage
-        SC_retrieved_sentence = StorageContext.from_defaults(
-            persist_dir="./sentence_index")
-        SC_retrieved_base = StorageContext.from_defaults(
-            persist_dir="./base_index")
+        
+        # Retrieve from storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+        
         retrieved_sentence_index = load_index_from_storage(
             SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
         retrieved_base_index = load_index_from_storage(
             SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
+        
         # Create query engine
-        sentence_query_engine = retrieved_sentence_index.as_query_engine(
-            llm=Groq(model="llama3-70b-8192",
-                     api_key=os.getenv('GROQ_API_KEY')),
-            similarity_top_k=5,
-            verbose=True,
-            node_postprocessors=[
-                MetadataReplacementPostProcessor(target_metadata_key="window")
-            ],
-        )
-
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=Groq(model="llama3-70b-8192",
-                     api_key=os.getenv('GROQ_API_KEY'))
+            llm=llm
         )
-        print('Inference')
-        # Inference
-
+        
+        print('Running Llama inference')
         base_response = base_query_engine.query(question)
-
-        return base_response
+        
+        return str(base_response)  # Convert response to string to ensure it's serializable
     except Exception as e:
-        print('llamaChat', e)
+        print(f'Error in llamaChat: {e}')
+        return f"Error in llamaChat: {str(e)}"
 
 
 async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
     try:
-        llm = Groq(temperature=1, model="gemma-7b-it",
-                   api_key=os.getenv('GROQ_API_KEY'))
-        ctx_sentence = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=sentence_node_parser)
-        ctx_base = ServiceContext.from_defaults(
-            llm=llm, embed_model="local:BAAI/bge-small-en-v1.5", node_parser=base_node_parser)
+        # Use API key from environment variables
+        groq_api_key = os.getenv('GROQ_API_KEY')
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY not found in environment variables")
+            
+        llm = Groq(temperature=1, model="gemma2-9b-it", api_key=groq_api_key)
+        
+        # Use Settings instead of ServiceContext
+        Settings.llm = llm
+        Settings.embed_model = "local:BAAI/bge-small-en-v1.5"
+        
+        # Create the indices
         try:
-            sentence_index = VectorStoreIndex(
-                nodes, service_context=ctx_sentence)
-            base_index = VectorStoreIndex(base_nodes, service_context=ctx_base)
+            sentence_index = VectorStoreIndex(nodes)
+            base_index = VectorStoreIndex(base_nodes)
         except Exception as e:
-            print(e)
+            print(f"Error creating indices: {e}")
+            raise
+            
+        # Save indices
         sentence_index.storage_context.persist(persist_dir="./sentence_index")
         base_index.storage_context.persist(persist_dir="./base_index")
-        ServiceContext.from_defaults(
-            chunk_size=1024, llm=llm, embed_model="local:BAAI/bge-small-en-v1.5")
-        # Retrieve from Storage
-        SC_retrieved_sentence = StorageContext.from_defaults(
-            persist_dir="./sentence_index")
-        SC_retrieved_base = StorageContext.from_defaults(
-            persist_dir="./base_index")
+        
+        # Retrieve from storage
+        SC_retrieved_sentence = StorageContext.from_defaults(persist_dir="./sentence_index")
+        SC_retrieved_base = StorageContext.from_defaults(persist_dir="./base_index")
+        
         retrieved_sentence_index = load_index_from_storage(
             SC_retrieved_sentence, embed_model="local:BAAI/bge-small-en-v1.5")
         retrieved_base_index = load_index_from_storage(
             SC_retrieved_base, embed_model="local:BAAI/bge-small-en-v1.5")
-        sentence_query_engine = retrieved_sentence_index.as_query_engine(
-            llm=Groq(model="gemma-7b-it",
-                     api_key=os.getenv('GROQ_API_KEY')),
-            similarity_top_k=5,
-            verbose=True,
-            node_postprocessors=[
-                MetadataReplacementPostProcessor(target_metadata_key="window")
-            ],
-        )
+        
+        # Create query engine
         base_query_engine = retrieved_base_index.as_query_engine(
             similarity_top_k=5,
             verbose=True,
-            llm=Groq(model="gemma-7b-it",
-                     api_key=os.getenv('GROQ_API_KEY'))
+            llm=llm
         )
-        print('Inference')
-        # Inference
-
+        
+        print('Running Gemma inference')
         base_response = base_query_engine.query(question)
-
-        return base_response
+        
+        return str(base_response)  # Convert response to string to ensure it's serializable
     except Exception as e:
-        print('gemmaChat', e)
+        print(f'Error in gemmaChat: {e}')
+        return f"Error in gemmaChat: {str(e)}"
