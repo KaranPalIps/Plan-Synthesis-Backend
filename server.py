@@ -275,7 +275,7 @@ async def gemmaChat(nodes, base_nodes, sentence_node_parser, base_node_parser):
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment variables")
             
-        llm = Groq(temperature=1, model="gemma2-9b-it", api_key=groq_api_key, response_format={"type": "json_object"})
+        llm = Groq(temperature=1, model="qwen-2.5-32b", api_key=groq_api_key, response_format={"type": "json_object"})
         
         # Use Settings instead of ServiceContext
         Settings.llm = llm
